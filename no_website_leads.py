@@ -77,6 +77,32 @@ SLEEP_BETWEEN = 0.3
 OUTFILE = "no_website_leads.csv"
 
 
+def load_dotenv(path=".env"):
+    """Populate os.environ from a .env file next to the script, if present.
+
+    Kept deliberately tiny: the project depends on the standard library plus
+    requests only, so we don't pull in python-dotenv. A real environment
+    variable always wins over a .env line, so `export KEY=...` still overrides.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):  # tolerate `export KEY=value`
+            key = key[len("export "):].strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def search(api_key, query, page_token=None):
     headers = {
         "Content-Type": "application/json",
@@ -101,14 +127,14 @@ def search(api_key, query, page_token=None):
     return data.get("places", []), data.get("nextPageToken")
 
 
-def is_lead(place):
+def is_lead(place, min_reviews):
     if place.get("websiteUri"):
         return False
     if place.get("businessStatus") != "OPERATIONAL":
         return False
     if not place.get("nationalPhoneNumber"):
         return False
-    if place.get("userRatingCount", 0) < MIN_REVIEWS:
+    if place.get("userRatingCount", 0) < min_reviews:
         return False
     return True
 
@@ -127,7 +153,7 @@ def to_row(place, state, city, biz_type):
     }
 
 
-def run_test(api_key):
+def run_test(api_key, min_reviews):
     """One API call. Confirms the key, billing and field mask all work."""
     print("Test run: 1 API call to 'barber shop in Springfield MA'\n")
     places, _ = search(api_key, "barber shop in Springfield MA")
@@ -136,7 +162,7 @@ def run_test(api_key):
         print("No results. Check that Places API (New) is enabled and billing is on.")
         return 1
 
-    no_site = [p for p in places if is_lead(p)]
+    no_site = [p for p in places if is_lead(p, min_reviews)]
     print(f"Returned {len(places)} businesses. {len(no_site)} have no website.\n")
     for p in no_site[:5]:
         name = p.get("displayName", {}).get("text", "?")
@@ -183,14 +209,19 @@ def main():
                     help="pages per query, 20 results each")
     ap.add_argument("--max-calls", type=int, default=400,
                     help="hard ceiling on API calls, protects your bill")
+    ap.add_argument("--min-reviews", type=int, default=MIN_REVIEWS,
+                    help="minimum review count to keep a listing (default %(default)s); "
+                         "lower it to catch small-city businesses with 1-2 reviews")
     args = ap.parse_args()
+
+    load_dotenv()  # pull GOOGLE_PLACES_API_KEY from .env if it isn't already set
 
     api_key = os.environ.get("GOOGLE_PLACES_API_KEY")
     if not api_key:
-        sys.exit("Set GOOGLE_PLACES_API_KEY first.")
+        sys.exit("Set GOOGLE_PLACES_API_KEY (in the environment or a .env file) first.")
 
     if args.test:
-        sys.exit(run_test(api_key))
+        sys.exit(run_test(api_key, args.min_reviews))
 
     cities = CITIES if not args.state else {args.state: CITIES[args.state]}
     leads, checked, calls = {}, 0, 0
@@ -210,7 +241,7 @@ def main():
                     calls += 1
                     checked += len(places)
                     for p in places:
-                        if is_lead(p):
+                        if is_lead(p, args.min_reviews):
                             row = to_row(p, state, city, biz_type)
                             leads.setdefault(row["phone"], row)
                     if not token:

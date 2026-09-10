@@ -33,11 +33,16 @@ Leads are deduped by phone number across queries. It sweeps
 
     python3 -m venv .venv && source .venv/bin/activate
     pip install -r requirements.txt
-    export GOOGLE_PLACES_API_KEY="..."
+    cp .env.example .env                     # then paste your key into .env
     python no_website_leads.py --test        # 1 call, verifies setup
     python no_website_leads.py --target 50   # small real run
 
-Flags: `--test`, `--target`, `--state {MA,CT,NY}`, `--max-pages`, `--max-calls`.
+The key is read from `.env` via a tiny inline loader (`load_dotenv`) — no
+python-dotenv dependency, to keep the stdlib-plus-requests rule. An exported
+`GOOGLE_PLACES_API_KEY` overrides `.env`.
+
+Flags: `--test`, `--target`, `--state {MA,CT,NY}`, `--max-pages`,
+`--max-calls`, `--min-reviews`.
 
 ## Cost constraint — important
 
@@ -55,25 +60,28 @@ through the single `search()` function so the counter stays accurate.
 
 ## Next tasks (in priority order)
 
-1. **`--min-reviews` flag.** `MIN_REVIEWS` is currently a module constant.
-   Smaller cities like Ansonia or Elmira have legitimate businesses with 1-2
-   reviews that are being filtered out. Make it a CLI arg.
-
-2. **Flag social-only businesses.** Many "no website" listings actually point
+1. **Flag social-only businesses.** Many "no website" listings actually point
    people to a Facebook or Instagram page. Google still reports no
    `websiteUri`, so they pass the filter, but they need a different pitch
    ("your Facebook page isn't a website") versus true zero-presence
    ("you have nothing"). Add a `presence` column with values like
    `none` / `social` and sort them separately in the CSV.
 
-3. **Resume between runs.** Right now a re-run starts from scratch and burns
+2. **Resume between runs.** Right now a re-run starts from scratch and burns
    calls re-checking the same businesses. Cache seen place IDs to a local
    JSON or SQLite file and skip them. Note Google's terms: place IDs may be
    stored indefinitely, but most other returned fields may not be cached
    long-term — store IDs and phone numbers for dedupe, re-fetch the rest.
 
-4. **Outreach status tracking.** Add columns for contacted date, outcome and
+3. **Outreach status tracking.** Add columns for contacted date, outcome and
    notes so the CSV doubles as a simple pipeline.
+
+## Done
+
+- **`--min-reviews` flag.** `MIN_REVIEWS` is still the default (3) but is now
+  overridable per run; `is_lead(place, min_reviews)` takes the threshold as an
+  argument.
+- **`.env` support.** `load_dotenv()` reads the key from `.env` on startup.
 
 ## Style notes
 

@@ -8,7 +8,15 @@ but no website. Outputs a CSV you can pitch from.
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
-    export GOOGLE_PLACES_API_KEY="your_key"
+
+Then add your API key. Copy the template and paste your key into it:
+
+    cp .env.example .env
+    # open .env and replace your_key_here with your real key
+
+The script reads `.env` automatically on startup, and `.env` is gitignored so
+your key never gets committed. An exported `GOOGLE_PLACES_API_KEY` still works
+too and takes precedence over `.env`.
 
 ## Verify your key first
 
@@ -37,4 +45,8 @@ Set a budget alert anyway: Google Cloud Console -> Billing -> Budgets & alerts.
 ## Tuning
 
 Edit `BUSINESS_TYPES` and `CITIES` at the top of the script. `MIN_REVIEWS`
-filters out dead listings.
+(default 3) filters out dead listings; override it per run with
+`--min-reviews`. Lower it to catch legitimate small-city businesses that only
+have one or two reviews:
+
+    python no_website_leads.py --state CT --min-reviews 1
