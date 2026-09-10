@@ -61,7 +61,7 @@ python-dotenv dependency, to keep the stdlib-plus-requests rule. An exported
     python no_website_leads.py --profiles    # + lead_profiles.json for mock sites
 
 Flags: `--test`, `--target`, `--state {MA,CT,NY}`, `--max-pages`,
-`--max-calls`, `--min-reviews`, `--profiles`.
+`--max-calls`, `--min-reviews`, `--profiles`, `--monthly-limit`.
 
 ## Cost constraint — important
 
@@ -78,9 +78,27 @@ mask.
 Google retired the old universal $200 monthly credit in March 2025. Free
 allowances are now per-SKU and do not pool. There is no automatic spend cap.
 
-**Do not remove or bypass `--max-calls`.** It is the only guard against a bad
-loop running up a real bill. When adding features, keep every API call routed
-through the single `search()` function so the counter stays accurate.
+**Do not remove or bypass `--max-calls` or `--monthly-limit`.** They are the
+guards against a real bill. When adding features, keep every API call routed
+through the single `search()` function so both counters stay accurate.
+
+## Staying inside the free tier (`--monthly-limit`)
+
+`--max-calls` only bounds one run; it can't stop three runs in a month from
+together crossing the free 1,000. So the script also keeps a persistent
+monthly tally in `.api_usage.json` (gitignored) and never makes the request
+that would exceed `--monthly-limit` (default `MONTHLY_FREE_LIMIT` = 1000).
+
+- `search()` returns `(places, token, billed)`; the counter (`record_call`)
+  only advances on a 200 response — the case Google charges for. Failed calls
+  don't count.
+- Counts are keyed by `YYYY-MM` (UTC) **and** SKU: `base` for normal runs,
+  `atmosphere` for `--profiles`. The two SKUs have separate free allowances and
+  are tracked separately, so exhausting one doesn't block the other.
+- A run stops at `min(--max-calls, month's remaining budget)`. `save_usage`
+  writes atomically (temp + rename) so an interrupt can't lose the count.
+- The tally only sees this script's calls; if the key is shared, the real
+  number lives in Cloud Console.
 
 ## Next tasks (in priority order)
 
@@ -105,6 +123,8 @@ through the single `search()` function so the counter stays accurate.
   "website") are now kept instead of dropped, and the CSV sorts warmest-first.
 - **`--profiles`.** Rich per-lead JSON (`lead_profiles.json`) with reviews,
   hours, description, services and location for building mock sites.
+- **`--monthly-limit` / free-tier guard.** Persistent per-month, per-SKU tally
+  in `.api_usage.json` that hard-stops before crossing the free 1,000.
 
 ## Style notes
 

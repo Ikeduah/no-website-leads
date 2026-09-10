@@ -117,6 +117,11 @@ SLEEP_BETWEEN = 0.3
 OUTFILE = "no_website_leads.csv"
 PROFILE_OUTFILE = "lead_profiles.json"
 
+# Local tally of billed requests per month, per SKU, so repeated runs stay
+# inside Google's free tier. Gitignored. See MONTHLY_FREE_LIMIT / --monthly-limit.
+USAGE_FILE = ".api_usage.json"
+MONTHLY_FREE_LIMIT = 1000  # free requests/month, per SKU (the two SKUs don't pool)
+
 
 def load_dotenv(path=".env"):
     """Populate os.environ from a .env file next to the script, if present.
@@ -168,7 +173,47 @@ def _host_in(host, domains):
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
+# --- monthly free-tier tracking -------------------------------------------
+# Google bills each request against a per-SKU free allowance that resets
+# monthly. We keep a local count so repeated runs never quietly cross it. The
+# guard assumes this script is the only thing spending on that SKU for the
+# project — if you share the key, check the real number in Cloud Console.
+
+def current_month():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+
+
+def load_usage(path=USAGE_FILE):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_usage(usage, path=USAGE_FILE):
+    # Write-then-rename so an interrupt can't corrupt the count and lose track.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(usage, f, indent=2)
+    os.replace(tmp, path)
+
+
+def month_used(usage, month, sku):
+    return usage.get(month, {}).get(sku, 0)
+
+
+def record_call(usage, month, sku):
+    usage.setdefault(month, {})[sku] = month_used(usage, month, sku) + 1
+    save_usage(usage)
+
+
 def search(api_key, query, field_mask, page_token=None):
+    """Return (places, next_page_token, billed).
+
+    `billed` is True only for a 200 response — the case Google charges for and
+    the only case the monthly counter should advance on.
+    """
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
@@ -182,14 +227,14 @@ def search(api_key, query, field_mask, page_token=None):
         resp = requests.post(ENDPOINT, headers=headers, json=body, timeout=30)
     except requests.RequestException as exc:
         print(f"  ! network error: {exc}", file=sys.stderr)
-        return [], None
+        return [], None, False
 
     if resp.status_code != 200:
         print(f"  ! HTTP {resp.status_code}: {resp.text[:300]}", file=sys.stderr)
-        return [], None
+        return [], None, False
 
     data = resp.json()
-    return data.get("places", []), data.get("nextPageToken")
+    return data.get("places", []), data.get("nextPageToken"), True
 
 
 def is_lead(place, min_reviews):
@@ -265,10 +310,20 @@ def to_profile(place, row):
     }
 
 
-def run_test(api_key, min_reviews):
+def run_test(api_key, min_reviews, monthly_limit):
     """One API call. Confirms the key, billing and field mask all work."""
+    month = current_month()
+    usage = load_usage()
+    used = month_used(usage, month, "base")
+    if used >= monthly_limit:
+        print(f"Monthly free-tier limit reached: {used}/{monthly_limit} base-tier "
+              f"requests already used in {month}. Not spending a test call.")
+        return 1
+
     print("Test run: 1 API call to 'barber shop in Springfield MA'\n")
-    places, _ = search(api_key, "barber shop in Springfield MA", BASE_FIELD_MASK)
+    places, _, billed = search(api_key, "barber shop in Springfield MA", BASE_FIELD_MASK)
+    if billed:
+        record_call(usage, month, "base")
 
     if not places:
         print("No results. Check that Places API (New) is enabled and billing is on.")
@@ -281,7 +336,8 @@ def run_test(api_key, min_reviews):
         phone = p.get("nationalPhoneNumber", "no phone")
         presence = classify_presence(p.get("websiteUri"))
         print(f"  [{presence:<7}] {name} - {phone}")
-    print("\nKey works. Run without --test to do a real sweep.")
+    print(f"\nKey works ({used + 1}/{monthly_limit} base-tier requests used this "
+          f"month). Run without --test to do a real sweep.")
     return 0
 
 
@@ -330,7 +386,7 @@ def report(leads, checked, calls, wrote_profiles):
     print(f"Saved to           : {OUTFILE}")
     if wrote_profiles:
         print(f"Profiles saved to  : {PROFILE_OUTFILE}")
-    print("=" * 45)
+    # Closing divider is printed by the caller, after the monthly-usage line.
 
 
 def main():
@@ -353,6 +409,11 @@ def main():
                          "services, location) to lead_profiles.json for building mock "
                          "sites. NOTE: uses Google's Enterprise+Atmosphere field tier "
                          "(~$40/1000 vs ~$35), so only turn it on for real batches.")
+    ap.add_argument("--monthly-limit", type=int, default=MONTHLY_FREE_LIMIT,
+                    help="never make more than this many billed requests per calendar "
+                         "month (default %(default)s = the free tier). Counted per SKU "
+                         "in .api_usage.json and enforced across every run, so you stay "
+                         "inside the free tier. Raise it to spend on purpose.")
     args = ap.parse_args()
 
     load_dotenv()  # pull GOOGLE_PLACES_API_KEY from .env if it isn't already set
@@ -362,10 +423,27 @@ def main():
         sys.exit("Set GOOGLE_PLACES_API_KEY (in the environment or a .env file) first.")
 
     if args.test:
-        sys.exit(run_test(api_key, args.min_reviews))
+        sys.exit(run_test(api_key, args.min_reviews, args.monthly_limit))
 
     field_mask = PROFILE_FIELD_MASK if args.profiles else BASE_FIELD_MASK
     cities = CITIES if not args.state else {args.state: CITIES[args.state]}
+
+    # The two field tiers are separate SKUs with separate free allowances, so
+    # track them under separate keys.
+    sku = "atmosphere" if args.profiles else "base"
+    month = current_month()
+    usage = load_usage()
+    used_before = month_used(usage, month, sku)
+    budget = args.monthly_limit - used_before  # calls left before we'd be billed
+    if budget <= 0:
+        sys.exit(f"Monthly free-tier limit reached: {used_before}/{args.monthly_limit} "
+                 f"{sku}-tier requests used in {month}. Nothing spent. Wait for the "
+                 f"month to reset, or raise --monthly-limit to spend beyond the free tier.")
+
+    # The run stops at whichever comes first: this run's --max-calls, or the
+    # month's remaining free budget. That's what keeps cumulative usage in-tier.
+    ceiling = min(args.max_calls, budget)
+    monthly_bound = budget <= args.max_calls
     leads, profiles, checked, calls = {}, {}, 0, 0
 
     def save_all():
@@ -373,20 +451,35 @@ def main():
         if args.profiles:
             write_profiles(profiles)
         report(leads, checked, calls, args.profiles)
+        used_now = used_before + calls
+        left = max(0, args.monthly_limit - used_now)
+        print(f"Monthly {sku}-tier usage : {used_now}/{args.monthly_limit} "
+              f"in {month} ({left} free left)")
+        print("=" * 45)
 
     for state, city_list in cities.items():
         for city in city_list:
             for biz_type in BUSINESS_TYPES:
-                if calls >= args.max_calls:
-                    print(f"\nHit call ceiling of {args.max_calls}.")
+                if calls >= ceiling:
+                    if monthly_bound:
+                        print(f"\nStopping to stay in the free tier: reached "
+                              f"{used_before + calls}/{args.monthly_limit} {sku}-tier "
+                              f"requests for {month}.")
+                    else:
+                        print(f"\nHit per-run call ceiling of {args.max_calls}.")
                     save_all()
                     return
 
                 token = None
                 for _ in range(args.max_pages):
-                    places, token = search(
+                    if calls >= ceiling:  # re-check before every billed request
+                        break
+                    places, token, billed = search(
                         api_key, f"{biz_type} in {city}", field_mask, token)
+                    if not billed:
+                        break
                     calls += 1
+                    record_call(usage, month, sku)
                     checked += len(places)
                     for p in places:
                         if is_lead(p, args.min_reviews):
@@ -406,7 +499,8 @@ def main():
                     save_all()
                     return
 
-            print(f"{city}: {len(leads)} leads / {calls} calls")
+            print(f"{city}: {len(leads)} leads / {calls} calls "
+                  f"({used_before + calls}/{args.monthly_limit} this month)")
 
     save_all()
 

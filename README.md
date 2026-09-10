@@ -32,7 +32,33 @@ you spend anything on a real sweep.
     python no_website_leads.py --state CT --target 100
     python no_website_leads.py --target 0 --max-calls 800
 
-`--max-calls` is a hard ceiling so a bad loop can't run up your bill.
+`--max-calls` is a per-run ceiling so a bad loop can't run up your bill.
+
+## Staying inside the free tier
+
+You get ~1,000 free requests per month per SKU. To guarantee you never cross
+that — even across many separate runs — the script keeps a running monthly
+tally in `.api_usage.json` (gitignored) and refuses the request that would go
+over:
+
+    python no_website_leads.py --state CT        # stops when the month's free 1,000 is spent
+
+`--monthly-limit` defaults to `1000` and is enforced across every run in the
+calendar month, not just the current one. A run ends at whichever comes first:
+its own `--max-calls`, or the month's remaining free budget. When the month's
+budget is gone it exits without spending:
+
+    Monthly free-tier limit reached: 1000/1000 base-tier requests used in 2026-09.
+
+The base sweep and `--profiles` are separate SKUs with separate free
+allowances, so they're counted separately — using up one doesn't block the
+other. To deliberately spend past the free tier, raise the limit, e.g.
+`--monthly-limit 2000`.
+
+Two caveats: the month boundary is UTC, and the tally only counts *this
+script's* calls — if the same API key is used elsewhere on the project, check
+the real number in Cloud Console. For a safety margin, set `--monthly-limit`
+a little below 1,000 (say `950`).
 
 ## What counts as a lead — the `presence` column
 
