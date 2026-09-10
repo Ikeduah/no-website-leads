@@ -116,6 +116,7 @@ MIN_REVIEWS = 3
 SLEEP_BETWEEN = 0.3
 OUTFILE = "no_website_leads.csv"
 PROFILE_OUTFILE = "lead_profiles.json"
+RUN_DATE = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 # Local tally of billed requests per month, per SKU, so repeated runs stay
 # inside Google's free tier. Gitignored. See MONTHLY_FREE_LIMIT / --monthly-limit.
@@ -277,6 +278,13 @@ def is_lead(place, min_reviews):
     return True
 
 
+# Pipeline columns, kept at the far right of the CSV. first_seen is auto-filled
+# with the discovery date; the rest are yours to fill in as you work a lead.
+# --resume appends and never rewrites existing rows, so whatever you type here
+# survives every later run.
+OUTREACH_COLS = ["first_seen", "contacted_date", "outcome", "notes"]
+
+
 def to_row(place, state, city, biz_type):
     website = place.get("websiteUri", "")
     return {
@@ -291,6 +299,11 @@ def to_row(place, state, city, biz_type):
         "presence": classify_presence(website),
         "existing_link": website,
         "google_maps_url": place.get("googleMapsUri", ""),
+        # Pipeline tracking: discovery date auto-set, the rest left for you.
+        "first_seen": RUN_DATE,
+        "contacted_date": "",
+        "outcome": "",
+        "notes": "",
     }
 
 
@@ -376,7 +389,7 @@ def write_csv(leads, append=False):
     rows = sorted(leads.values(), key=_sort_key)
     cols = ["name", "phone", "address", "state", "city", "category",
             "rating", "review_count", "presence", "existing_link",
-            "google_maps_url"]
+            "google_maps_url"] + OUTREACH_COLS
     # In --resume mode we append new leads to the existing file so a growing
     # pipeline (and any outreach columns you add by hand) is never clobbered.
     existing = append and os.path.exists(OUTFILE)

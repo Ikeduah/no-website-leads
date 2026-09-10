@@ -101,6 +101,20 @@ it does have, warmest (coldest web presence) first:
 `existing_link` holds that social/builder URL when there is one, so you can see
 what they're currently sending people to.
 
+## The CSV as a pipeline
+
+The last four columns turn the CSV into a lightweight CRM:
+
+- `first_seen` — auto-filled with the date the lead was discovered, so you can
+  see how long one has been sitting.
+- `contacted_date`, `outcome`, `notes` — blank for you to fill in as you work
+  the lead (e.g. outcome: `left voicemail`, `booked call`, `not interested`).
+
+With `--resume` these stay put: new leads are appended and existing rows are
+never rewritten, so whatever you type here survives every later run. (A plain
+run without `--resume` overwrites the file, so do your tracking on resumed
+runs, or keep the working copy in a spreadsheet.)
+
 ## Building mock sites — `--profiles`
 
     python no_website_leads.py --state CT --target 40 --profiles

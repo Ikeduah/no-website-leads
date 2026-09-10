@@ -11,7 +11,10 @@ pitch: they already care about being found online, but have nowhere to send
 people.
 
 Output is `no_website_leads.csv` with name, phone, address, city, state,
-category, rating, review count and a Google Maps link.
+category, rating, review count, a Google Maps link, a `presence` tag
+(none/social/builder), any existing social link, and pipeline columns
+(first_seen / contacted_date / outcome / notes). With `--profiles` it also
+writes `lead_profiles.json` for building mock sites.
 
 ## How it works
 
@@ -103,12 +106,11 @@ that would exceed `--monthly-limit` (default `MONTHLY_FREE_LIMIT` = 1000).
 - The tally only sees this script's calls; if the key is shared, the real
   number lives in Cloud Console.
 
-## Next tasks (in priority order)
+## Next tasks
 
-1. **Outreach status tracking.** Add columns for contacted date, outcome and
-   notes so the CSV doubles as a simple pipeline. Note: `--resume` appends and
-   never rewrites existing rows, so hand-added columns to the right of ours are
-   preserved across runs — keep that property.
+All items from the original roadmap are done (see below). Ideas if the project
+grows: a `status` column with a controlled vocabulary, per-state output files,
+or exporting the pipeline to a real CRM.
 
 ## Done
 
@@ -128,6 +130,10 @@ that would exceed `--monthly-limit` (default `MONTHLY_FREE_LIMIT` = 1000).
   CSV is appended, not overwritten. Only place IDs + phones are cached, per
   Google's terms; a query is marked done only if it wasn't cut short by the
   ceiling. `--reset-cache` clears it.
+- **Outreach pipeline columns.** `OUTREACH_COLS` (`first_seen` auto-set, plus
+  `contacted_date` / `outcome` / `notes` blank) are the CSV's rightmost columns.
+  Because `--resume` appends and never rewrites rows, values typed here survive
+  every later run — preserve that property in any future CSV change.
 
 ## Style notes
 
