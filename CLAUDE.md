@@ -17,17 +17,34 @@ category, rating, review count and a Google Maps link.
 
 `no_website_leads.py` hits the Google Places API (New) `places:searchText`
 endpoint. The key detail is the `X-Goog-FieldMask` header — it requests
-`places.websiteUri`, and a business with that field absent is treated as
-having no website.
+`places.websiteUri`, which is how we judge web presence.
 
 A result is kept as a lead only if all of these hold (see `is_lead`):
-- `websiteUri` is missing
+- it has no *real* website — `classify_presence(websiteUri)` is not `"website"`
 - `businessStatus` is `OPERATIONAL`
 - a `nationalPhoneNumber` exists (no phone means no way to pitch)
-- `userRatingCount` >= `MIN_REVIEWS` (default 3, filters dead listings)
+- `userRatingCount` >= min reviews (default 3, overridable via `--min-reviews`)
+
+`classify_presence` buckets each listing by domain into `none` (no link),
+`social` (Facebook/IG/Linktree/Yelp/etc), `builder` (Google's auto stubs like
+`business.site`) or `website` (a real site — the only one that's *not* a lead).
+This matters: Google often lists a business's Facebook page as its "website",
+so social-only shops used to be wrongly rejected. They're now kept and tagged
+via the CSV `presence` column, sorted warmest-first (`none` before `social`
+before `builder`).
 
 Leads are deduped by phone number across queries. It sweeps
 `BUSINESS_TYPES` x `CITIES`, two pages per query, 20 results per page.
+
+## Rich profiles (`--profiles`)
+
+`--profiles` swaps in `PROFILE_FIELD_MASK` (base fields + reviews, hours,
+editorial description, services/types, location, price level, photos) and
+writes `lead_profiles.json` alongside the CSV — one structured record per lead
+(`to_profile`) with everything an agent needs to mock up a website: name,
+category, services, hours, address, lat/lng, description, and real reviews as
+testimonials. Those extra fields are Atmosphere-tier, so this costs more (see
+below) — it's opt-in for that reason.
 
 ## Running it
 
@@ -41,8 +58,10 @@ The key is read from `.env` via a tiny inline loader (`load_dotenv`) — no
 python-dotenv dependency, to keep the stdlib-plus-requests rule. An exported
 `GOOGLE_PLACES_API_KEY` overrides `.env`.
 
+    python no_website_leads.py --profiles    # + lead_profiles.json for mock sites
+
 Flags: `--test`, `--target`, `--state {MA,CT,NY}`, `--max-pages`,
-`--max-calls`, `--min-reviews`.
+`--max-calls`, `--min-reviews`, `--profiles`.
 
 ## Cost constraint — important
 
@@ -50,6 +69,11 @@ Requesting website + phone + rating puts Text Search in Google's **Enterprise**
 field tier. Roughly 1,000 free requests per month, then about $35 per 1,000.
 Each request returns up to 20 businesses, so the free tier covers around
 20,000 businesses monthly.
+
+`--profiles` adds reviews / editorialSummary / priceLevel, which push the
+request into the pricier **Enterprise + Atmosphere** tier (~$40/1,000). That's
+why it's a flag, not the default — keep plain lead-finding runs on the base
+mask.
 
 Google retired the old universal $200 monthly credit in March 2025. Free
 allowances are now per-SKU and do not pool. There is no automatic spend cap.
@@ -60,20 +84,14 @@ through the single `search()` function so the counter stays accurate.
 
 ## Next tasks (in priority order)
 
-1. **Flag social-only businesses.** Many "no website" listings actually point
-   people to a Facebook or Instagram page. Google still reports no
-   `websiteUri`, so they pass the filter, but they need a different pitch
-   ("your Facebook page isn't a website") versus true zero-presence
-   ("you have nothing"). Add a `presence` column with values like
-   `none` / `social` and sort them separately in the CSV.
-
-2. **Resume between runs.** Right now a re-run starts from scratch and burns
+1. **Resume between runs.** Right now a re-run starts from scratch and burns
    calls re-checking the same businesses. Cache seen place IDs to a local
    JSON or SQLite file and skip them. Note Google's terms: place IDs may be
    stored indefinitely, but most other returned fields may not be cached
    long-term — store IDs and phone numbers for dedupe, re-fetch the rest.
+   (`places.id` is already in the field mask, so it's on hand to cache.)
 
-3. **Outreach status tracking.** Add columns for contacted date, outcome and
+2. **Outreach status tracking.** Add columns for contacted date, outcome and
    notes so the CSV doubles as a simple pipeline.
 
 ## Done
@@ -82,6 +100,11 @@ through the single `search()` function so the counter stays accurate.
   overridable per run; `is_lead(place, min_reviews)` takes the threshold as an
   argument.
 - **`.env` support.** `load_dotenv()` reads the key from `.env` on startup.
+- **`presence` column / social-only leads.** `classify_presence` tags each
+  lead `none` / `social` / `builder`; social-only shops (Facebook page as the
+  "website") are now kept instead of dropped, and the CSV sorts warmest-first.
+- **`--profiles`.** Rich per-lead JSON (`lead_profiles.json`) with reviews,
+  hours, description, services and location for building mock sites.
 
 ## Style notes
 

@@ -7,6 +7,7 @@ venv/
 # Output — leads and any local cache
 no_website_leads.csv
 *.csv
+lead_profiles.json
 seen_places.json
 seen_places.db
 
