@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Output — leads and any local cache
+no_website_leads.csv
+*.csv
+seen_places.json
+seen_places.db
+
+# Secrets
+.env
