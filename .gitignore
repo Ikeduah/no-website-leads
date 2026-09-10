@@ -10,6 +10,8 @@ no_website_leads.csv
 lead_profiles.json
 .api_usage.json
 .api_usage.json.tmp
+.seen_places.json
+.seen_places.json.tmp
 seen_places.json
 seen_places.db
 

@@ -60,8 +60,11 @@ python-dotenv dependency, to keep the stdlib-plus-requests rule. An exported
 
     python no_website_leads.py --profiles    # + lead_profiles.json for mock sites
 
+    python no_website_leads.py --resume      # skip already-swept queries, spend only on new ground
+
 Flags: `--test`, `--target`, `--state {MA,CT,NY}`, `--max-pages`,
-`--max-calls`, `--min-reviews`, `--profiles`, `--monthly-limit`.
+`--max-calls`, `--min-reviews`, `--profiles`, `--monthly-limit`, `--resume`,
+`--reset-cache`.
 
 ## Cost constraint — important
 
@@ -102,15 +105,10 @@ that would exceed `--monthly-limit` (default `MONTHLY_FREE_LIMIT` = 1000).
 
 ## Next tasks (in priority order)
 
-1. **Resume between runs.** Right now a re-run starts from scratch and burns
-   calls re-checking the same businesses. Cache seen place IDs to a local
-   JSON or SQLite file and skip them. Note Google's terms: place IDs may be
-   stored indefinitely, but most other returned fields may not be cached
-   long-term — store IDs and phone numbers for dedupe, re-fetch the rest.
-   (`places.id` is already in the field mask, so it's on hand to cache.)
-
-2. **Outreach status tracking.** Add columns for contacted date, outcome and
-   notes so the CSV doubles as a simple pipeline.
+1. **Outreach status tracking.** Add columns for contacted date, outcome and
+   notes so the CSV doubles as a simple pipeline. Note: `--resume` appends and
+   never rewrites existing rows, so hand-added columns to the right of ours are
+   preserved across runs — keep that property.
 
 ## Done
 
@@ -125,6 +123,11 @@ that would exceed `--monthly-limit` (default `MONTHLY_FREE_LIMIT` = 1000).
   hours, description, services and location for building mock sites.
 - **`--monthly-limit` / free-tier guard.** Persistent per-month, per-SKU tally
   in `.api_usage.json` that hard-stops before crossing the free 1,000.
+- **`--resume` / resume cache.** `.seen_places.json` records fully-swept queries
+  (skipped with zero calls next time) and captured place IDs (never re-emitted).
+  CSV is appended, not overwritten. Only place IDs + phones are cached, per
+  Google's terms; a query is marked done only if it wasn't cut short by the
+  ceiling. `--reset-cache` clears it.
 
 ## Style notes
 

@@ -122,6 +122,12 @@ PROFILE_OUTFILE = "lead_profiles.json"
 USAGE_FILE = ".api_usage.json"
 MONTHLY_FREE_LIMIT = 1000  # free requests/month, per SKU (the two SKUs don't pool)
 
+# Resume cache (--resume). Remembers which queries are fully swept and which
+# place IDs we've already captured, so a re-run spends calls only on new
+# ground. Per Google's terms we only persist place IDs (cacheable indefinitely)
+# and phone numbers for dedupe — never the rich fields. Gitignored.
+SEEN_FILE = ".seen_places.json"
+
 
 def load_dotenv(path=".env"):
     """Populate os.environ from a .env file next to the script, if present.
@@ -206,6 +212,26 @@ def month_used(usage, month, sku):
 def record_call(usage, month, sku):
     usage.setdefault(month, {})[sku] = month_used(usage, month, sku) + 1
     save_usage(usage)
+
+
+# --- resume cache ----------------------------------------------------------
+
+def load_cache(path=SEEN_FILE):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError):
+        data = {}
+    data.setdefault("queries_done", {})  # query string -> ISO timestamp
+    data.setdefault("places", {})        # place_id -> phone (dedupe only)
+    return data
+
+
+def save_cache(cache, path=SEEN_FILE):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+    os.replace(tmp, path)
 
 
 def search(api_key, query, field_mask, page_token=None):
@@ -346,14 +372,18 @@ def _sort_key(row):
             row["state"], -int(row["review_count"] or 0))
 
 
-def write_csv(leads):
+def write_csv(leads, append=False):
     rows = sorted(leads.values(), key=_sort_key)
     cols = ["name", "phone", "address", "state", "city", "category",
             "rating", "review_count", "presence", "existing_link",
             "google_maps_url"]
-    with open(OUTFILE, "w", newline="", encoding="utf-8") as f:
+    # In --resume mode we append new leads to the existing file so a growing
+    # pipeline (and any outreach columns you add by hand) is never clobbered.
+    existing = append and os.path.exists(OUTFILE)
+    with open(OUTFILE, "a" if existing else "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=cols)
-        writer.writeheader()
+        if not existing:
+            writer.writeheader()
         writer.writerows(rows)
 
 
@@ -414,7 +444,22 @@ def main():
                          "month (default %(default)s = the free tier). Counted per SKU "
                          "in .api_usage.json and enforced across every run, so you stay "
                          "inside the free tier. Raise it to spend on purpose.")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip queries already fully swept in a previous run (cached in "
+                         ".seen_places.json) and skip businesses you already captured, so "
+                         "a re-run spends its budget only on new ground. New leads are "
+                         "appended to the CSV. Pair with --monthly-limit to sweep a big "
+                         "area across several months without ever re-paying.")
+    ap.add_argument("--reset-cache", action="store_true",
+                    help="delete the resume cache (.seen_places.json) and start fresh.")
     args = ap.parse_args()
+
+    if args.reset_cache:
+        try:
+            os.remove(SEEN_FILE)
+            print(f"Cleared resume cache {SEEN_FILE}.")
+        except FileNotFoundError:
+            print(f"No resume cache at {SEEN_FILE} to clear.")
 
     load_dotenv()  # pull GOOGLE_PLACES_API_KEY from .env if it isn't already set
 
@@ -444,13 +489,19 @@ def main():
     # month's remaining free budget. That's what keeps cumulative usage in-tier.
     ceiling = min(args.max_calls, budget)
     monthly_bound = budget <= args.max_calls
+
+    cache = load_cache() if args.resume else {"queries_done": {}, "places": {}}
     leads, profiles, checked, calls = {}, {}, 0, 0
+    skipped_queries, skipped_seen = 0, 0
 
     def save_all():
-        write_csv(leads)
+        write_csv(leads, append=args.resume)
         if args.profiles:
             write_profiles(profiles)
         report(leads, checked, calls, args.profiles)
+        if args.resume:
+            print(f"Resume             : skipped {skipped_queries} done queries, "
+                  f"{skipped_seen} already-seen businesses")
         used_now = used_before + calls
         left = max(0, args.monthly_limit - used_now)
         print(f"Monthly {sku}-tier usage : {used_now}/{args.monthly_limit} "
@@ -460,6 +511,13 @@ def main():
     for state, city_list in cities.items():
         for city in city_list:
             for biz_type in BUSINESS_TYPES:
+                query = f"{biz_type} in {city}"
+
+                # Already fully swept in a past run? Skip it — costs no calls.
+                if args.resume and query in cache["queries_done"]:
+                    skipped_queries += 1
+                    continue
+
                 if calls >= ceiling:
                     if monthly_bound:
                         print(f"\nStopping to stay in the free tier: reached "
@@ -471,26 +529,44 @@ def main():
                     return
 
                 token = None
+                stopped_early = False
                 for _ in range(args.max_pages):
                     if calls >= ceiling:  # re-check before every billed request
+                        stopped_early = True
                         break
-                    places, token, billed = search(
-                        api_key, f"{biz_type} in {city}", field_mask, token)
+                    places, token, billed = search(api_key, query, field_mask, token)
                     if not billed:
+                        stopped_early = True
                         break
                     calls += 1
                     record_call(usage, month, sku)
                     checked += len(places)
                     for p in places:
-                        if is_lead(p, args.min_reviews):
-                            row = to_row(p, state, city, biz_type)
-                            if row["phone"] not in leads:
-                                leads[row["phone"]] = row
-                                if args.profiles:
-                                    profiles[row["phone"]] = to_profile(p, row)
+                        if not is_lead(p, args.min_reviews):
+                            continue
+                        pid = p.get("id", "")
+                        # Captured in an earlier run? Don't re-emit it.
+                        if args.resume and pid and pid in cache["places"]:
+                            skipped_seen += 1
+                            continue
+                        row = to_row(p, state, city, biz_type)
+                        if row["phone"] in leads:  # within-run dedupe
+                            continue
+                        leads[row["phone"]] = row
+                        if args.profiles:
+                            profiles[row["phone"]] = to_profile(p, row)
+                        if args.resume and pid:
+                            cache["places"][pid] = row["phone"]
                     if not token:
                         break
                     time.sleep(SLEEP_BETWEEN)
+
+                # Mark done only if we swept every page we meant to (not cut off
+                # by the ceiling or an error) — so a resumed run redoes it cleanly.
+                if args.resume and not stopped_early:
+                    cache["queries_done"][query] = \
+                        datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    save_cache(cache)
 
                 time.sleep(SLEEP_BETWEEN)
 

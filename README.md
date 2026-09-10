@@ -60,6 +60,31 @@ script's* calls — if the same API key is used elsewhere on the project, check
 the real number in Cloud Console. For a safety margin, set `--monthly-limit`
 a little below 1,000 (say `950`).
 
+## Resume between runs — `--resume`
+
+    python no_website_leads.py --resume
+
+Records which queries it has fully swept (in `.seen_places.json`, gitignored)
+and skips them next time, so a re-run spends its budget only on new ground. It
+also remembers the businesses you already captured and won't add them twice;
+new leads are **appended** to the CSV, so your growing pipeline (and any
+outreach columns you add by hand) is never overwritten.
+
+This is the natural partner to `--monthly-limit`: point the tool at a big area,
+and each month it advances further into the sweep instead of re-running the
+same first slice. Over a few months you cover everything without ever paying —
+and without re-checking a business you've already seen.
+
+    python no_website_leads.py --resume --reset-cache   # forget progress, start over
+
+Per Google's terms the cache stores only place IDs (cacheable indefinitely) and
+phone numbers, for dedupe — never the rich fields.
+
+Note: appended CSV rows are sorted within each run, not across the whole file;
+open it in a spreadsheet to sort the full list. `lead_profiles.json` is always
+the current batch only (it holds cache-restricted data), not an accumulating
+file.
+
 ## What counts as a lead — the `presence` column
 
 A business is kept if it has a phone, is operational, clears `--min-reviews`,
